@@ -37,7 +37,7 @@ app.post("/participants", async (req,res) => {
        };
 
     try{
-        const checkName = await db.collection('participants').findOne({name: req.body.name}).toArray();
+        const checkName = await db.collection('participants').findOne({name: req.body.name});
 
        if(checkName){
         return res.status(409).send("Já existe um usuário conectado com este nome!");
@@ -82,11 +82,10 @@ app.post("/messages", async (req,res) => {
     const validation = messageScheme.validate(req.body, {abortEarly: false});
 
     if(validation.error){
-        res.status(422).send(validation.error.details.map(detail => detail.message))
-        return;
+        return res.status(422).send(validation.error.details.map(detail => detail.message));
     }
     try{
-        const checkName = await db.collection('participants').findOne({name: user}).toArray();
+        const checkName = await db.collection('participants').findOne({name: user});
        
         if(!checkName){
             return res.status(422).send("Usuário não está logado!");
@@ -101,6 +100,7 @@ app.post("/messages", async (req,res) => {
         });
         res.sendStatus(201);
     }catch(e){
+        console.log(e)
         res.sendStatus(422);
     }
 });
@@ -114,9 +114,8 @@ app.get("/messages", async (req,res) => {
         const dbPublic = await db.collection("messages").find({to: "Todos"}).toArray();
         const myMessages = [...new Set([...dbTo ,...dbFrom ,...dbPublic])];
 
-        if(limit === NaN){
-            res.status(201).send(myMessages);
-            return;
+        if(isNaN(limit)){
+            return res.status(201).send(myMessages);
         }
 
         res.status(201).send(myMessages.splice(-limit));
@@ -126,15 +125,15 @@ app.get("/messages", async (req,res) => {
 });
 
 app.post("/status", async (req,res) => {
-    const {user} = req.headers;
+    const { user } = req.headers;
     try {
-        const participant = await db.collection("participants").findOne({name: user}).toArray();
-
+        const participant = await db.collection("participants").findOne({name: user});
+   
         if(!participant){
             return res.sendStatus(404);
         }
 
-        await mongoClient.db("participants").updateOne({name: user},{$set: {lastStatus: Date.now()}});
+        await db.collection("participants").updateOne({name: user},{$set: {lastStatus: Date.now()}});
 
         res.sendStatus(200);
     }catch(e){
@@ -142,24 +141,30 @@ app.post("/status", async (req,res) => {
     }
 });
 
+const REMOVE_INTERVAL = 1000*15;
+
 setInterval(async () =>{
     const momento = dayjs(Date.now()).format('HH:mm:ss');
+    const seconds = Date.now() - (10 * 1000)
     try {
-        const removedUsers = await db.collection("participants").find({lastStatus: {$gt: Date.now() - (10000)}})
+        const removedUsers = await db.collection("participants").find({lastStatus: {$gt: seconds}}).toArray();
+
         if(removedUsers.length !== 0){
-            const removedAlert = removedUsers.map(e => e = {
-                from: 'System',
-                to: 'Todos', 
-                text: `${e.name} sai da sala...`, 
-                type: 'status', 
-                time: momento
+            const removedAlert = removedUsers.map(e => {
+                return{ 
+                    from: `${e.name}`,
+                    to: 'Todos', 
+                    text: `sai da sala...`, 
+                    type: 'status', 
+                    time: momento
+                }
            })
-           await db.collection("messages").insertMany(removedAlert).toArray();
-           await db.collection("participants").deleteMany({lastStatus: {$gt: Date.now() - (10 * 1000)}});
+           await db.collection("messages").insertMany(removedAlert);
+           await db.collection("participants").deleteMany({lastStatus: {$gt: seconds}});
         }
     }catch(e){
         console.log("Não há ninguem para deletar");
     };
-},process.env.REMOVE_INTERVAL);
+},REMOVE_INTERVAL);
 
 app.listen(process.env.PORT)
