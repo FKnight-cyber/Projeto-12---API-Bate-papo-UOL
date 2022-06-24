@@ -1,9 +1,10 @@
 import express, { json } from 'express';
 import cors from 'cors';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import dotenv from 'dotenv';
 import joi from 'joi';
-import dayjs from 'dayjs'
+import dayjs from 'dayjs';
+import { stripHtml } from "string-strip-html";
 
 dotenv.config();
 
@@ -37,19 +38,20 @@ app.post("/participants", async (req,res) => {
        };
 
     try{
-        const checkName = await db.collection('participants').findOne({name: req.body.name});
+        const cleanedName = (stripHtml(req.body.name).result).trim();
+        const checkName = await db.collection('participants').findOne({name: cleanedName});
 
        if(checkName){
         return res.status(409).send("Já existe um usuário conectado com este nome!");
        };
 
-        await db.collection('participants').insertOne({name: req.body.name, lastStatus: Date.now()});
+        await db.collection('participants').insertOne({name: cleanedName, lastStatus: Date.now()});
 
         await db.collection('messages').insertOne(
             {
-                from: `${req.body.name}`, 
+                from: 'System', 
                 to: 'Todos', 
-                text: 'entra na sala...', 
+                text: `${cleanedName} entra na sala...`, 
                 type: 'status', 
                 time: momento
             }
@@ -65,7 +67,7 @@ app.get("/participants", async (_,res) => {
         const participants = await db.collection("participants").find({}).toArray();
         res.send(participants);
     }catch(e){
-        res.sendStatus(500);
+        res.sendStatus(422);
     }
 });
 
@@ -92,15 +94,14 @@ app.post("/messages", async (req,res) => {
         }
 
         await db.collection("messages").insertOne({
-                from: user,
-                to: req.body.to,
-                text: req.body.text,
-                type: req.body.type,
+                from: (stripHtml(user).result).trim(),
+                to: (stripHtml(req.body.to).result).trim(),
+                text: (stripHtml(req.body.text).result).trim(),
+                type: (stripHtml(req.body.type).result).trim(),
                 time: momento
         });
         res.sendStatus(201);
     }catch(e){
-        console.log(e)
         res.sendStatus(422);
     }
 });
@@ -126,41 +127,63 @@ app.get("/messages", async (req,res) => {
 
 app.post("/status", async (req,res) => {
     const { user } = req.headers;
+  
     try {
         const participant = await db.collection("participants").findOne({name: user});
-   
+      
         if(!participant){
             return res.sendStatus(404);
         }
-
+       
         await db.collection("participants").updateOne({name: user},{$set: {lastStatus: Date.now()}});
-
+       
         res.sendStatus(200);
     }catch(e){
+        res.sendStatus(422);
+    }
+});
+
+app.delete('/messages/:ID_DA_MENSAGEM', async (req,res) => {
+    const { user } = req.headers;
+    const { ID_DA_MENSAGEM } = req.params;
+    console.log(ID_DA_MENSAGEM)
+    try {
+        const message = await db.collection('messages').findOne({_id: new ObjectId(ID_DA_MENSAGEM)});
+        console.log(message)
+        if(!message){
+            return res.sendStatus(404);
+        }
+        if(message.from !== user){
+           return res.sendStatus(401);
+        }
+
+        await db.collection('messages').deleteOne({_id: new ObjectId(ID_DA_MENSAGEM)});
+        res.sendStatus(200);
+    } catch(e){
+        console.log("Não foi possível deletar a mensagem!",e);
         res.sendStatus(500);
     }
 });
 
-const REMOVE_INTERVAL = 1000*15;
-
+const REMOVE_INTERVAL = 15000;
 setInterval(async () =>{
     const momento = dayjs(Date.now()).format('HH:mm:ss');
-    const seconds = Date.now() - (10 * 1000)
+    const seconds = Date.now() - 10000
     try {
-        const removedUsers = await db.collection("participants").find({lastStatus: {$gt: seconds}}).toArray();
+        const removedUsers = await db.collection("participants").find({lastStatus: {$lte: seconds}}).toArray();
 
         if(removedUsers.length !== 0){
             const removedAlert = removedUsers.map(e => {
                 return{ 
-                    from: `${e.name}`,
+                    from: `System`,
                     to: 'Todos', 
-                    text: `sai da sala...`, 
+                    text: `${e.name} sai da sala...`, 
                     type: 'status', 
                     time: momento
                 }
            })
            await db.collection("messages").insertMany(removedAlert);
-           await db.collection("participants").deleteMany({lastStatus: {$gt: seconds}});
+           await db.collection("participants").deleteMany({lastStatus: {$lte: seconds}});
         }
     }catch(e){
         console.log("Não há ninguem para deletar");
