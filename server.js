@@ -25,40 +25,52 @@ promise.catch(e => console.log("Não foi possível se conectar ao banco de dados
 
 app.post("/participants", async (req,res) => {
     const momento = dayjs(Date.now()).format('HH:mm:ss');
+
+    let cleansedParticipant = {
+        name: ""
+    };
+
+    if(typeof(req.body.name) === 'string'){
+        cleansedParticipant = {
+            name: stripHtml(req.body.name).result
+        }
+    }
+    
     const requestScheme = joi.object(
         {
-            name: joi.string().required()
+            name: joi.string().trim().required()
         }
     );
+    
 
-    const validation = requestScheme.validate(req.body);
+    const { error } = requestScheme.validate(req.body);
+    const { name } = cleansedParticipant;
 
-    if(validation.error){
-        return res.status(422).send(validation.error.details.map(detail => detail.message));
+    if(error){
+        return res.status(422).send(error.details.map(detail => detail.message));
        };
 
     try{
-        const cleanedName = (stripHtml(req.body.name).result).trim();
-        const checkName = await db.collection('participants').findOne({name: cleanedName});
+        const checkName = await db.collection('participants').findOne({name: name});
 
        if(checkName){
         return res.status(409).send("Já existe um usuário conectado com este nome!");
        };
 
-        await db.collection('participants').insertOne({name: cleanedName, lastStatus: Date.now()});
+        await db.collection('participants').insertOne({name: name, lastStatus: Date.now()});
 
         await db.collection('messages').insertOne(
             {
                 from: 'System', 
                 to: 'Todos', 
-                text: `${cleanedName} entra na sala...`, 
+                text: `${name} entra na sala...`, 
                 type: 'status', 
                 time: momento
             }
         );
         res.sendStatus(201);
     }catch(e){
-        res.status(422).send("Não foi possível registrar o usuário!");
+        res.status(422).send({errorMessage: `Não foi possível registrar o usuário! Causa: ${e}`});
     }
 });
 
@@ -67,7 +79,8 @@ app.get("/participants", async (_,res) => {
         const participants = await db.collection("participants").find({}).toArray();
         res.send(participants);
     }catch(e){
-        res.sendStatus(422);
+        res.status(422).send({errorMessage: `Não foi possível atualizar a lista de participantes!
+        Causa: ${e}`});
     }
 });
 
@@ -81,10 +94,10 @@ app.post("/messages", async (req,res) => {
         type: joi.string().valid("message","private_message").required(),
     });
 
-    const validation = messageScheme.validate(req.body, {abortEarly: false});
-
-    if(validation.error){
-        return res.status(422).send(validation.error.details.map(detail => detail.message));
+    const { error } = messageScheme.validate(req.body, {abortEarly: false});
+    
+    if(error){
+        return res.status(422).send(error.details.map(detail => detail.message));
     }
     try{
         const checkName = await db.collection('participants').findOne({name: user});
@@ -102,7 +115,7 @@ app.post("/messages", async (req,res) => {
         });
         res.sendStatus(201);
     }catch(e){
-        res.sendStatus(422);
+        res.status(422).send({errorMessage: `Não foi possível postar a mensagem! Causa: ${e}`});
     }
 });
 
@@ -121,7 +134,8 @@ app.get("/messages", async (req,res) => {
 
         res.status(201).send(myMessages.splice(-limit));
     }catch(e){
-        res.sendStatus(422);
+        res.status(422).send({errorMessage: `Não foi possível atualizar a lista de mensagens!
+        Causa: ${e}`});
     }
 });
 
@@ -139,17 +153,18 @@ app.post("/status", async (req,res) => {
        
         res.sendStatus(200);
     }catch(e){
-        res.sendStatus(422);
+        res.status(422).send({errorMessage: `Não foi possível atualizar o status do usuário!
+        Causa: ${e}`});
     }
 });
 
 app.delete('/messages/:ID_DA_MENSAGEM', async (req,res) => {
     const { user } = req.headers;
     const { ID_DA_MENSAGEM } = req.params;
-    console.log(ID_DA_MENSAGEM)
+    
     try {
         const message = await db.collection('messages').findOne({_id: new ObjectId(ID_DA_MENSAGEM)});
-        console.log(message)
+        
         if(!message){
             return res.sendStatus(404);
         }
@@ -160,8 +175,52 @@ app.delete('/messages/:ID_DA_MENSAGEM', async (req,res) => {
         await db.collection('messages').deleteOne({_id: new ObjectId(ID_DA_MENSAGEM)});
         res.sendStatus(200);
     } catch(e){
-        console.log("Não foi possível deletar a mensagem!",e);
-        res.sendStatus(500);
+        res.status(500).send({errorMessage: `Não foi possível deletar a mensagem! Causa: ${e}`});
+    }
+});
+
+app.put('/messages/:ID_DA_MENSAGEM', async (req, res) => {
+    const { user } = req.headers;
+    const { ID_DA_MENSAGEM } = req.params;
+    const momento = dayjs(Date.now()).format('HH:mm:ss');
+
+    const messageScheme = joi.object(
+        {
+            to: joi.string().trim().required(),
+            text: joi.string().trim().required(),
+            type: joi.string().trim().required()
+        }
+    )
+
+    const { error } = messageScheme.validate(req.body);
+
+    if(error){
+        res.status(422).send(error.details.map(detail => detail.message));
+    }
+
+    try {
+        const message = await db.collection('messages').findOne({_id: new ObjectId(ID_DA_MENSAGEM)});
+        
+        if(!message){
+            return res.sendStatus(404);
+        }
+        if(message.from !== user){
+           return res.sendStatus(401);
+        }
+
+        await db.collection('messages').updateOne({_id: new ObjectId(ID_DA_MENSAGEM)},
+        {$set: 
+            {
+                to: req.body.to,
+                from: user,
+                text: stripHtml(req.body.text).result,
+                type: req.body.type,
+                time: momento
+            }
+        });
+        res.status(201).send("Mensagem atualizada com sucesso!")
+    }catch (e){
+        res.status(422).send({errorMessage: `Não foi possível atualizar a mensagem! Causa: ${e}`});
     }
 });
 
@@ -186,7 +245,7 @@ setInterval(async () =>{
            await db.collection("participants").deleteMany({lastStatus: {$lte: seconds}});
         }
     }catch(e){
-        console.log("Não há ninguem para deletar");
+        console.log("Erro ao remover inativos!: ",e);
     };
 },REMOVE_INTERVAL);
 
